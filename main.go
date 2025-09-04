@@ -51,11 +51,12 @@ func main(){
 	valCommands.register("reset", handlerReset, "reset - Removes all users thus all feeds from the database")
 	valCommands.register("users", handlerListUsers, "users - Lists all the users registered and indicates the currently logged in user.")
 	valCommands.register("agg", handlerAgg, "agg - Gets a test RSS feed")
-	valCommands.register("addfeed", handlerAddFeed, "addfeed <name> <url> - Adds a feed with required name and url to the feeds table.")
+	valCommands.register("addfeed", middlewareLoggedIn(handlerAddFeed), "addfeed <name> <url> - Adds a feed with required name and url to the feeds table.")
 	valCommands.register("feeds", handlerFeeds, "feeds - Displays any saved feeds")
 	valCommands.register("help", handlerHelp, "Help - displays this information")
-	valCommands.register("follow", handlerFollow, "follow <url> - Adds a new feed follow from the provided url to the user")
-	valCommands.register("following", handlerFollowing, "following - Lists all the feeds being followed by the current user")
+	valCommands.register("follow", middlewareLoggedIn(handlerFollow), "follow <url> - Adds a new feed follow from the provided url to the user")
+	valCommands.register("following", middlewareLoggedIn(handlerFollowing), "following - Lists all the feeds being followed by the current user")
+	valCommands.register("unfollow", middlewareLoggedIn(handlerUnfollow), "unfollow <name> - Removes the followed feed by name")
 	args := os.Args
 	if len(args) < 2{
 		fmt.Println("no arguments given")
@@ -158,7 +159,7 @@ func handlerAgg(s *state, cmd command, _ map[string]string) error {
 	return nil
 }
 
-func handlerAddFeed(s *state, cmd command, _ map[string]string) error {
+func handlerAddFeed(s *state, cmd command, _ map[string]string, user database.User) error {
 	nonameorfeed := "name or url missing from addfeed command"
 	err := checkArgs(cmd, 2)
 	if err != nil {
@@ -168,11 +169,6 @@ func handlerAddFeed(s *state, cmd command, _ map[string]string) error {
 	var name, feed string
 	name = cmd.args[0]
 	feed = cmd.args[1]
-	user, err := s.db.GetUserByName(context.Background(), s.cfg.Current_user_name)
-	if err != nil {
-		fmt.Printf("Failed to get %s from users database\n", s.cfg.Current_user_name)
-		return err
-	}
 	//_, err = s.db.CreateFeed(context.Background(), database.CreateFeedParams{ Name:	toNullString(name), Url: feed, UserID: user.ID})
 	curTime := time.Now()
 	_, err = s.db.CreateFeed(context.Background(), database.CreateFeedParams{ID: uuid.New(),  Name:	name, Url: feed, CreatedAt: curTime, UpdatedAt: curTime, UserID: user.ID})
@@ -183,7 +179,7 @@ func handlerAddFeed(s *state, cmd command, _ map[string]string) error {
 	}
 	fmt.Printf("Created feed: %s\nAt URL: %s\nfor user: %s\n", name, feed, s.cfg.Current_user_name)
 	cmd.args[0] = feed
-	err = handlerFollow(s, cmd, nil)
+	err = handlerFollow(s, cmd, nil, user)
 	if err != nil {
 		fmt.Println("failed to add feed_follow for user")
 		return err
@@ -226,7 +222,7 @@ func handlerHelp(_ *state, _ command, help map[string]string) error {
 	return nil
 }
 
-func handlerFollow(s *state, cmd command, _ map[string]string) error{
+func handlerFollow(s *state, cmd command, _ map[string]string, user database.User) error{
 	err := checkArgs(cmd, 1)
 	if err != nil {
 		fmt.Println("feed url not found")
@@ -234,11 +230,6 @@ func handlerFollow(s *state, cmd command, _ map[string]string) error{
 	}
 	//_, err = s.db.CreateFeed(context.Background(), database.CreateFeedParams{ID: uuid.New(),  Name:	name, Url: feed, CreatedAt: curTime, UpdatedAt: curTime, UserID: user.ID})
 	curTime := time.Now()	
-	user, err := s.db.GetUserByName(context.Background(), s.cfg.Current_user_name)
-	if err != nil {
-		fmt.Println("Unable to find user by name")
-		return err
-	}
 	feed, err := s.db.GetFeedByURL(context.Background(), cmd.args[0])
 	if err != nil {
 		fmt.Println("failed to retrieve feed record from url")
@@ -264,8 +255,8 @@ func handlerFollow(s *state, cmd command, _ map[string]string) error{
 	return nil
 }
 
-func handlerFollowing(s *state, cmd command, _ map[string]string) error{
-	uName := s.cfg.Current_user_name
+func handlerFollowing(s *state, cmd command, _ map[string]string, user database.User) error{
+	uName := user.Name
 	follows, err := s.db.GetFeedFollowsForUser(context.Background(), uName)
 	if err != nil {
 		fmt.Println("failed to retrieve username from database")
@@ -283,6 +274,28 @@ func handlerFollowing(s *state, cmd command, _ map[string]string) error{
 	}
 	return nil
 }
+
+func handlerUnfollow(s *state, cmd command, _ map[string]string, user database.User) error{
+	userUUID := user.ID
+	err := checkArgs(cmd, 1)
+	if err != nil {
+		fmt.Println("Missing or invalid feed name")
+	}
+	//_, err = s.db.CreateFeed(context.Background(), database.CreateFeedParams{ID: uuid.New(),  Name:	name, Url: feed, CreatedAt: curTime, UpdatedAt: curTime, UserID: user.ID})
+	deleted, err := s.db.DeleteFeedFollow(context.Background(), database.DeleteFeedFollowParams{UserID: userUUID, Url: cmd.args[0]})
+	if err != nil {
+		fmt.Println("error deleting feed")
+		return err
+	}
+	if deleted < 1 {
+		fmt.Println("No feeds unfollowed.")
+		return nil
+	}
+	fmt.Printf("Unfollowed %v feeds.\n", deleted)
+	return nil	
+	
+}
+
 func (c *commands) run(s *state, cmd command, help map[string]string) error{
 	//find the command to run
 	cmdToRun := cmd.cmd
@@ -369,4 +382,14 @@ func checkArgs(cmd command, count int) error{
 		}
 	}
 	return nil
+}
+
+func middlewareLoggedIn(handler func(s *state, cmd command, help map[string]string, user database.User) error) func(*state, command, map[string]string) error {
+	return func(s *state, cmd command, help map[string]string) error {
+		user, err := s.db.GetUserByName(context.Background(), s.cfg.Current_user_name)
+		if err != nil {
+			return err
+		}
+		return handler(s, cmd, help, user)
+	}
 }
