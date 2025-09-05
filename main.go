@@ -151,11 +151,38 @@ func handlerListUsers(s *state, cmd command, _ map[string]string) error {
 }
 
 func handlerAgg(s *state, cmd command, _ map[string]string) error {
-	feed, err := fetchFeed(context.Background(), "https://www.wagslane.dev/index.xml")		
+	err := checkArgs(cmd, 1)
 	if err != nil {
-		return err
+		fmt.Println("invalid or bad wait time")
+		os.Exit(1)
 	}
-	fmt.Printf("%+v\n", feed)
+	waitTime, err := time.ParseDuration(cmd.args[0])
+	if err != nil {
+		fmt.Println("error in frequency parse, exiting")
+		os.Exit(1)
+	}
+	ticker := time.NewTicker(waitTime)
+	for ; ; <-ticker.C {
+		feed, err := s.db.GetNextFeedToFetch(context.Background())
+		//fmt.Printf("feed.ID: %v\n", feed.ID)
+		fmt.Printf("error: %v\n", err)
+		if err != nil {
+			fmt.Println("error retrieving next feed to update")
+		}	
+		rows, err := s.db.MarkFeedFetched(context.Background(), database.MarkFeedFetchedParams{ ID: feed.ID, UpdatedAt: time.Now()})
+		if rows < 1 {
+			fmt.Println("no times updated")
+		}
+		if err != nil {
+			fmt.Println("error in marking fetched feeds"+feed.Url)
+		}
+		feedText, err := fetchFeed(context.Background(), feed.Url)		
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%+v\n", feedText)
+		
+	}
 	return nil
 }
 
@@ -169,12 +196,11 @@ func handlerAddFeed(s *state, cmd command, _ map[string]string, user database.Us
 	var name, feed string
 	name = cmd.args[0]
 	feed = cmd.args[1]
-	//_, err = s.db.CreateFeed(context.Background(), database.CreateFeedParams{ Name:	toNullString(name), Url: feed, UserID: user.ID})
 	curTime := time.Now()
 	_, err = s.db.CreateFeed(context.Background(), database.CreateFeedParams{ID: uuid.New(),  Name:	name, Url: feed, CreatedAt: curTime, UpdatedAt: curTime, UserID: user.ID})
 	if err != nil {
-		//fmt.Printf("error creating feed: %s with url: %s for user: %s with UUID: %v\n", feed, toNullString(name), s.cfg.Current_user_name, user.ID)
-		fmt.Printf("error creating feed: %s with url: %s for user: %s with UUID: %v\n", feed, name, s.cfg.Current_user_name, user.ID)
+		fmt.Printf("DB error: %v\n", err)
+		fmt.Printf("error creating feed: %s with url: %s for user: %s with UUID: %v\n", feed, name, user.Name, user.ID)
 		return err
 	}
 	fmt.Printf("Created feed: %s\nAt URL: %s\nfor user: %s\n", name, feed, s.cfg.Current_user_name)
@@ -393,3 +419,4 @@ func middlewareLoggedIn(handler func(s *state, cmd command, help map[string]stri
 		return handler(s, cmd, help, user)
 	}
 }
+
