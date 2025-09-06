@@ -14,15 +14,16 @@ import (
 )
 
 const createPost = `-- name: CreatePost :one
-INSERT INTO posts (id, created_at, updated_at, title, url, description, published_at, feed_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, created_at, updated_at, title, url, description, published_at, feed_id
+INSERT INTO posts (id, created_at, updated_at, seen_at, title, url, description, published_at, feed_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, created_at, updated_at, seen_at, title, url, description, content, published_at, feed_id
 `
 
 type CreatePostParams struct {
 	ID          uuid.UUID
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	SeenAt      sql.NullTime
 	Title       sql.NullString
 	Url         string
 	Description sql.NullString
@@ -35,6 +36,7 @@ func (q *Queries) CreatePost(ctx context.Context, arg CreatePostParams) (Post, e
 		arg.ID,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.SeenAt,
 		arg.Title,
 		arg.Url,
 		arg.Description,
@@ -46,9 +48,11 @@ func (q *Queries) CreatePost(ctx context.Context, arg CreatePostParams) (Post, e
 		&i.ID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.SeenAt,
 		&i.Title,
 		&i.Url,
 		&i.Description,
+		&i.Content,
 		&i.PublishedAt,
 		&i.FeedID,
 	)

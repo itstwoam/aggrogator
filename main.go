@@ -16,6 +16,8 @@ import (
 	"net/http"
 	"github.com/itstwoam/aggrogator/internal/rssparser"
 	"encoding/xml"
+	"github.com/mmcdole/gofeed"
+	"strconv"
 )
 
 type state struct {
@@ -57,6 +59,7 @@ func main(){
 	valCommands.register("follow", middlewareLoggedIn(handlerFollow), "follow <url> - Adds a new feed follow from the provided url to the user")
 	valCommands.register("following", middlewareLoggedIn(handlerFollowing), "following - Lists all the feeds being followed by the current user")
 	valCommands.register("unfollow", middlewareLoggedIn(handlerUnfollow), "unfollow <name> - Removes the followed feed by name")
+	valCommands.register("browse", middlewareLoggedIn(handlerBrowse), "browse <count> - Displays count posts (2 by default)")
 	args := os.Args
 	if len(args) < 2{
 		fmt.Println("no arguments given")
@@ -165,7 +168,7 @@ func handlerAgg(s *state, cmd command, _ map[string]string) error {
 	for ; ; <-ticker.C {
 		feed, err := s.db.GetNextFeedToFetch(context.Background())
 		//fmt.Printf("feed.ID: %v\n", feed.ID)
-		fmt.Printf("error: %v\n", err)
+		//fmt.Printf("error: %v\n", err)
 		if err != nil {
 			fmt.Println("error retrieving next feed to update")
 		}	
@@ -176,12 +179,16 @@ func handlerAgg(s *state, cmd command, _ map[string]string) error {
 		if err != nil {
 			fmt.Println("error in marking fetched feeds"+feed.Url)
 		}
-		feedText, err := fetchFeed(context.Background(), feed.Url)		
+		//feedText, err := fetchFeed(context.Background(), feed.Url)		
+		fp := gofeed.NewParser()
+		parsedFeed, err := fp.ParseURL(feed.Url)
 		if err != nil {
-			return err
+			fmt.Printf("Could not get feed %s\n", feed.Url)
+		}else{	
+			fmt.Println(parsedFeed.Title)
+			fmt.Println(parsedFeed.Description)
+			_ = addPosts(s, parsedFeed.Items, feed.ID)
 		}
-		fmt.Printf("%+v\n", feedText)
-		
 	}
 	return nil
 }
@@ -322,6 +329,42 @@ func handlerUnfollow(s *state, cmd command, _ map[string]string, user database.U
 	
 }
 
+func handlerBrowse(s *state, cmd command, _ map[string]string, user database.User) error {
+	var limit int32 = 2
+	if len(cmd.args) > 0 {
+		parsed, err := strconv.Atoi(cmd.args[0])
+		if err == nil {
+			limit = int32(parsed)
+		}
+	}
+	fmt.Printf("%v\n", limit)
+	posts, err := s.db.GetRandomPosts(context.Background(), limit)
+	if err != nil {
+		fmt.Println("Failed to retrieve posts")
+		os.Exit(1)
+	}
+	spacer := "---------------------"
+	curTime := time.Now()
+	for i := range posts {
+		err = s.db.MarkPostRead(context.Background(), database.MarkPostReadParams{ ID: posts[i].ID,
+			SeenAt: sql.NullTime{Time: curTime, Valid: true},
+		})
+		if err != nil {
+			fmt.Println("Error in setting seen_at timestamp for "+posts[i].Url)
+			os.Exit(1)
+		}
+		fmt.Println(spacer)
+		if posts[i].Title.Valid {
+			fmt.Printf(posts[i].Title.String)
+		}
+		if posts[i].Description.Valid {
+			fmt.Println(posts[i].Description.String)
+		}
+		fmt.Println(posts[i].Url)
+	}
+	return nil
+}
+
 func (c *commands) run(s *state, cmd command, help map[string]string) error{
 	//find the command to run
 	cmdToRun := cmd.cmd
@@ -420,3 +463,33 @@ func middlewareLoggedIn(handler func(s *state, cmd command, help map[string]stri
 	}
 }
 
+func addPosts(s *state, items []*gofeed.Item, feedID uuid.UUID) error {
+	for _, post := range items {
+		_ , err := s.db.GetPostByURL(context.Background(), post.Link)
+		if err == sql.ErrNoRows {
+	//_, err = s.db.CreateFeed(context.Background(), database.CreateFeedParams{ID: uuid.New(),  Name:	name, Url: feed, CreatedAt: curTime, UpdatedAt: curTime, UserID: user.ID})
+			curTime := time.Now()
+			published := time.Time{}
+			if post.PublishedParsed != nil {
+				published = *post.PublishedParsed
+			}
+			cPost, err := s.db.CreatePost(context.Background(),
+				database.CreatePostParams{ID: uuid.New(),
+					CreatedAt: curTime,
+					UpdatedAt: curTime,
+					SeenAt: sql.NullTime{Valid: false},
+					Title: toNullString(post.Title),
+					Url: post.Link,
+					Description: toNullString(post.Description),
+					PublishedAt: published,
+					FeedID: feedID},
+				)
+			if err == nil {
+				fmt.Println("Added post "+cPost.Url)
+			}else{
+				fmt.Println("error adding post "+cPost.Url)
+			}
+		}
+	}
+	return nil
+}
